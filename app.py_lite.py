@@ -11,12 +11,10 @@ from pptx import Presentation
 
 # win32com 관련 모듈을 Windows 환경에서만 import하도록 처리
 try:
-    # Windows 환경에서 PPT 파일 변환을 위해 pywin32 라이브러리 사용
     import pythoncom
     import win32com.client
     WINDOWS_ENV = True
 except ImportError:
-    # Mac 또는 pywin32가 설치되지 않은 환경에서는 변환 기능 비활성화
     WINDOWS_ENV = False
 
 # PPTX 병합 작업을 별도의 스레드에서 처리하기 위한 워커 클래스
@@ -38,34 +36,29 @@ class MergerWorker(QThread):
                 if os.path.exists(temp_file):
                     os.remove(temp_file)
             except Exception:
-                pass # 파일이 없거나 삭제 권한이 없을 경우 무시
+                pass
 
     # .ppt 파일을 .pptx로 변환하는 함수 (Windows + MS PowerPoint 필요)
     def convert_ppt_to_pptx(self, ppt_path):
         if not WINDOWS_ENV:
             raise EnvironmentError("`.ppt` 파일 변환은 Windows 환경과 `pywin32` 라이브러리, 그리고 MS PowerPoint가 필요합니다.")
         
-        # QThread 내에서 COM 객체를 사용하기 위해 초기화
         pythoncom.CoInitialize() 
         
-        # 임시 폴더에 변환된 파일 경로 생성
         temp_dir = os.path.dirname(ppt_path)
-        # 임시 파일 이름 충돌 방지를 위해 UUID나 랜덤 접두사를 사용해도 좋으나, 여기서는 간단히 처리
         temp_pptx_path = os.path.join(temp_dir, f"~temp_converted_{os.path.basename(ppt_path)[:-4]}.pptx")
         
         powerpoint = None
         try:
             powerpoint = win32com.client.Dispatch("Powerpoint.Application")
-            powerpoint.Visible = 0 # PowerPoint 앱을 숨김
+            powerpoint.Visible = 0
 
-            # 파일을 열 때 읽기 전용으로 열기
             presentation = powerpoint.Presentations.Open(
                 ppt_path, 
                 ReadOnly=True, 
                 WithWindow=False
             )
-            # SaveAs 메소드의 FileFormat 상수를 사용하여 PPTX로 저장 (24는 ppSaveAsPresentation)
-            presentation.SaveAs(temp_pptx_path, 24) 
+            presentation.SaveAs(temp_pptx_path, 24) # 24는 ppSaveAsPresentation (pptx)
             presentation.Close()
             
             self.temp_files.append(temp_pptx_path)
@@ -91,8 +84,7 @@ class MergerWorker(QThread):
             # 1. 파일 목록 순회 및 PPTX로 변환
             for path in self.file_paths:
                 if path.lower().endswith('.ppt'):
-                    # 변환 중 메시지를 GUI에 표시
-                    self.progress_update.emit(1, 1) # 임시 진행률로 변환 단계 표시
+                    self.progress_update.emit(1, 1) # 변환 단계 표시
                     converted_path = self.convert_ppt_to_pptx(path)
                     process_paths.append(converted_path)
                 elif path.lower().endswith('.pptx'):
@@ -103,21 +95,17 @@ class MergerWorker(QThread):
                 return
 
             # 2. 병합 로직 시작 및 슬라이드 카운트 최적화
-            # 마스터 PPTX를 로드하고, 이 객체를 재사용하며 슬라이드 수를 계산합니다.
             master_pptx = Presentation(process_paths[0])
-            total_slides_processed = master_pptx.slides.count
-            total_slides_count = total_slides_processed # 마스터 파일 슬라이드 수로 시작 (중복 카운팅 제거)
+            
+            # --- 수정된 부분: len() 사용 ---
+            total_slides_processed = len(master_pptx.slides) 
+            total_slides_count = total_slides_processed
             
             # 나머지 파일들의 슬라이드 수만 합산하여 전체 카운트 계산
             for path in process_paths[1:]:
-                # 파일을 다시 로드하여 슬라이드 수만 얻어옴 (진행률 표시를 위해 필요)
-                try:
-                    # 파일을 최소한으로 로드하여 슬라이드 개수만 얻습니다.
-                    total_slides_count += Presentation(path).slides.count
-                except Exception:
-                    pass
+                # 파일을 로드하여 슬라이드 개수만 얻어옴
+                total_slides_count += len(Presentation(path).slides) 
 
-            # 진행률 초기 업데이트
             self.progress_update.emit(total_slides_processed, total_slides_count)
             
             # 3. 나머지 파일들을 순회하며 슬라이드 복사
@@ -127,19 +115,17 @@ class MergerWorker(QThread):
 
                 for slide in source_pptx.slides:
                     source_layout_name = slide.slide_layout.name
-                    target_layout = slide_layout_map.get(source_layout_name, master_pptx.slide_layouts[6]) # 6: Blank Layout
+                    target_layout = slide_layout_map.get(source_layout_name, master_pptx.slide_layouts[6])
                     
                     new_slide = master_pptx.slides.add_slide(target_layout)
                     
                     # 콘텐츠 복사 (텍스트만)
                     for shape in slide.shapes:
                         if shape.has_text_frame:
-                            # 텍스트 박스 추가 및 텍스트 복사 (기본 기능)
                             text_frame = new_slide.shapes.add_textbox(shape.left, shape.top, shape.width, shape.height).text_frame
                             text_frame.text = shape.text
                         elif shape.shape_type == 13: 
-                            # 이미지/차트 등 복잡한 요소는 python-pptx 제약으로 인해 생략
-                            pass
+                            pass # 이미지/차트 생략
 
                     total_slides_processed += 1
                     self.progress_update.emit(total_slides_processed, total_slides_count)
@@ -368,7 +354,6 @@ class PptxMergerApp(QWidget):
     # --- 워커 스레드 시그널 처리 ---
     def on_progress_update(self, current, total):
         self.progress_dialog.setMaximum(total)
-        # current가 1, total이 1일 때는 변환 중임을 알림 (PPT 파일이 포함된 경우)
         if current == 1 and total == 1:
             self.progress_dialog.setLabelText("PPT 파일을 PPTX로 변환 중...")
             self.progress_dialog.setMaximum(100)
