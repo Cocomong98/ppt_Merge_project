@@ -51,13 +51,14 @@ class MergerWorker(QThread):
         powerpoint = None
         try:
             powerpoint = win32com.client.Dispatch("Powerpoint.Application")
-            # 💡 수정: Visible 속성을 설정하지 않거나 True로 설정하여 오류 회피
-            # powerpoint.Visible = 0  <-- 이 라인 제거 또는 powerpoint.Visible = True 로 변경
+            
+            # 💡 수정 1: Visible을 True로 설정하여 강제로 창을 표시 (보안 제한 우회)
+            powerpoint.Visible = True  
             
             presentation = powerpoint.Presentations.Open(
                 ppt_path, 
-                ReadOnly=True, 
-                WithWindow=False
+                ReadOnly=True
+                # 💡 수정 2: WithWindow=False 옵션을 제거하여 창 생성을 허용
             )
             presentation.SaveAs(temp_pptx_path, 24) # 24는 ppSaveAsPresentation (pptx)
             presentation.Close()
@@ -68,7 +69,9 @@ class MergerWorker(QThread):
             if powerpoint:
                 try: powerpoint.Quit()
                 except: pass
-            raise Exception(f"PPT 파일 변환 실패 (MS PowerPoint 설치 및 권한 확인 필요): {e}")
+            # 오류 메시지에 정확한 예외 코드를 포함하여 사용자에게 전달
+            error_details = f"PPT 파일 변환 실패 (MS PowerPoint 설치 및 권한 확인 필요): {e}"
+            raise Exception(error_details)
         finally:
             if powerpoint:
                 # Quit은 정상적으로 작동해야 하므로 유지
