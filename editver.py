@@ -4,18 +4,13 @@ import traceback
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, 
     QPushButton, QLineEdit, QLabel, QListWidget, 
-    QFileDialog, QMessageBox, QSizePolicy, QProgressDialog
+    QFileDialog, QMessageBox, QProgressDialog
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QCoreApplication
 from pptx import Presentation
 
-# win32com 관련 모듈을 Windows 환경에서만 import하도록 처리
-try:
-    import pythoncom
-    import win32com.client
-    WINDOWS_ENV = True
-except ImportError:
-    WINDOWS_ENV = False
+# win32com 종속성 제거 (안정적인 .pptx 병합만 지원)
+WINDOWS_ENV = False 
 
 # PPTX 병합 작업을 별도의 스레드에서 처리하기 위한 워커 클래스
 class MergerWorker(QThread):
@@ -27,79 +22,22 @@ class MergerWorker(QThread):
         super().__init__(parent)
         self.file_paths = file_paths
         self.output_path = output_path
-        self.temp_files = [] # 변환된 임시 파일 목록
-
-    def __del__(self):
-        # 스레드 종료 시 임시 파일 정리
-        for temp_file in self.temp_files:
-            try:
-                if os.path.exists(temp_file):
-                    os.remove(temp_file)
-            except Exception:
-                pass
-
-    # .ppt 파일을 .pptx로 변환하는 함수 (Windows + MS PowerPoint 필요)
-    def convert_ppt_to_pptx(self, ppt_path):
-        if not WINDOWS_ENV:
-            raise EnvironmentError("`.ppt` 파일 변환은 Windows 환경과 `pywin32` 라이브러리, 그리고 MS PowerPoint가 필요합니다.")
-        
-        pythoncom.CoInitialize() 
-        
-        temp_dir = os.path.dirname(ppt_path)
-        temp_pptx_path = os.path.join(temp_dir, f"~temp_converted_{os.path.basename(ppt_path)[:-4]}.pptx")
-        
-        powerpoint = None
-        try:
-            powerpoint = win32com.client.Dispatch("Powerpoint.Application")
-            
-            # 💡 수정 1: Visible을 True로 설정하여 강제로 창을 표시 (보안 제한 우회)
-            powerpoint.Visible = True  
-            
-            presentation = powerpoint.Presentations.Open(
-                ppt_path, 
-                ReadOnly=True
-                # 💡 수정 2: WithWindow=False 옵션을 제거하여 창 생성을 허용
-            )
-            presentation.SaveAs(temp_pptx_path, 24) # 24는 ppSaveAsPresentation (pptx)
-            presentation.Close()
-            
-            self.temp_files.append(temp_pptx_path)
-            return temp_pptx_path
-        except Exception as e:
-            if powerpoint:
-                try: powerpoint.Quit()
-                except: pass
-            # 오류 메시지에 정확한 예외 코드를 포함하여 사용자에게 전달
-            error_details = f"PPT 파일 변환 실패 (MS PowerPoint 설치 및 권한 확인 필요): {e}"
-            raise Exception(error_details)
-        finally:
-            if powerpoint:
-                # Quit은 정상적으로 작동해야 하므로 유지
-                try: powerpoint.Quit()
-                except: pass
-            pythoncom.CoUninitialize()
+        self.temp_files = [] # 현재 버전에서는 사용되지 않음
 
     def run(self):
         if not self.file_paths:
             self.merge_finished.emit(False, "오류: 병합할 PPT 파일이 없습니다.")
             return
             
-        process_paths = []
-        try:
-            # 1. 파일 목록 순회 및 PPTX로 변환
-            for path in self.file_paths:
-                if path.lower().endswith('.ppt'):
-                    self.progress_update.emit(1, 1) # 변환 단계 표시
-                    converted_path = self.convert_ppt_to_pptx(path)
-                    process_paths.append(converted_path)
-                elif path.lower().endswith('.pptx'):
-                    process_paths.append(path)
-                
-            if not process_paths:
-                self.merge_finished.emit(False, "오류: 병합할 파일이 유효하지 않습니다.")
-                return
+        process_paths = self.file_paths
+        
+        # .ppt 파일이 목록에 있는지 확인하고 경고
+        if any(path.lower().endswith('.ppt') for path in process_paths):
+             self.merge_finished.emit(False, "오류: `.ppt` 파일은 지원되지 않습니다.\n`.pptx` 파일만 목록에 추가해 주세요.")
+             return
 
-            # 2. 병합 로직 시작 및 슬라이드 카운트 최적화
+        try:
+            # 1. 병합 로직 시작 및 슬라이드 카운트 최적화
             master_pptx = Presentation(process_paths[0])
             
             total_slides_processed = len(master_pptx.slides) 
@@ -112,39 +50,46 @@ class MergerWorker(QThread):
 
             self.progress_update.emit(total_slides_processed, total_slides_count)
             
-            # 3. 나머지 파일들을 순회하며 슬라이드 복사
+            # 2. 나머지 파일들을 순회하며 슬라이드 복사
             for path in process_paths[1:]:
                 source_pptx = Presentation(path)
                 slide_layout_map = {layout.name: layout for layout in master_pptx.slide_layouts}
 
                 for slide in source_pptx.slides:
                     source_layout_name = slide.slide_layout.name
+                    # 레이아웃 매핑 (기본 레이아웃이 없을 경우 빈 페이지 레이아웃 사용)
                     target_layout = slide_layout_map.get(source_layout_name, master_pptx.slide_layouts[6])
                     
                     new_slide = master_pptx.slides.add_slide(target_layout)
                     
-                    # 콘텐츠 복사 (텍스트만)
+                    # 콘텐츠 복사 (텍스트만 복사, 이미지/차트는 생략)
                     for shape in slide.shapes:
                         if shape.has_text_frame:
-                            text_frame = new_slide.shapes.add_textbox(shape.left, shape.top, shape.width, shape.height).text_frame
-                            text_frame.text = shape.text
+                            # 기존 텍스트 상자의 위치/크기를 대략적으로 복사하여 텍스트 상자 추가
+                            try:
+                                text_frame = new_slide.shapes.add_textbox(shape.left, shape.top, shape.width, shape.height).text_frame
+                                text_frame.text = shape.text
+                            except Exception:
+                                # 크기/위치 오류 시 안전하게 텍스트만 복사
+                                new_slide.shapes.add_textbox(0, 0, 1, 1).text_frame.text = shape.text
+                        # shape_type == 13은 Placeholder를 나타냄. 다른 형태는 현재 복사 로직에서 제외
                         elif shape.shape_type == 13: 
-                            pass # 이미지/차트 생략
+                            pass 
 
                     total_slides_processed += 1
                     self.progress_update.emit(total_slides_processed, total_slides_count)
                     QCoreApplication.processEvents()
 
-            # 4. 결과 파일 저장
+            # 3. 결과 파일 저장
             master_pptx.save(self.output_path)
             
-            self.merge_finished.emit(True, f"✅ PPTX 병합 완료! (임시 파일 포함)\n\n저장 위치: {self.output_path}")
+            self.merge_finished.emit(True, f"✅ PPTX 병합 완료!\n\n저장 위치: {self.output_path}")
 
         except Exception as e:
             error_message = f"PPTX 병합 중 오류가 발생했습니다.\n\n오류: {e}\n\n상세:\n{traceback.format_exc()}"
             self.merge_finished.emit(False, error_message)
         finally:
-            # 임시 파일 정리
+            # win32com 제거로 temp_files 정리 로직은 불필요하지만 안전을 위해 유지
             for temp_file in self.temp_files:
                 try:
                     if os.path.exists(temp_file):
@@ -155,8 +100,7 @@ class MergerWorker(QThread):
 class PptxMergerApp(QWidget):
     def __init__(self):
         super().__init__()
-        title_suffix = " (ppt 자동 변환 기능 포함)" if WINDOWS_ENV else " (pptx 전용)"
-        self.setWindowTitle('PPTX 순서 병합 프로그램' + title_suffix) 
+        self.setWindowTitle('PPTX 순서 병합 프로그램 (PPX 전용)') 
         self.setGeometry(100, 100, 650, 480)
         self.save_directory = os.path.expanduser("~") 
         self.setup_ui()
@@ -174,13 +118,11 @@ class PptxMergerApp(QWidget):
         self.select_files_button.clicked.connect(self.open_file_dialog)
         file_select_layout.addWidget(self.select_files_button)
 
-        drag_info = "여기에 .PPTX 또는 .PPT 파일을 드래그 & 드롭 가능"
-        if WINDOWS_ENV:
-            drag_info += "\n(.PPT 파일은 자동으로 .PPTX로 변환됩니다. *MS PowerPoint 설치 필수)"
+        drag_info = "여기에 **.PPTX** 파일 드래그 & 드롭 가능"
         
         drag_label = QLabel(drag_info)
         drag_label.setAlignment(Qt.AlignCenter)
-        drag_label.setStyleSheet("border: 2px dashed #ccc; padding: 10px; color: #555; background-color: #f9f9f9; border-radius: 8px;")
+        drag_label.setStyleSheet("border: 2px dashed #ccc; padding: 10px; color: #cc0000; background-color: #fff0f0; border-radius: 8px; font-weight: bold;")
         file_select_layout.addWidget(drag_label)
         
         main_layout.addLayout(file_select_layout)
@@ -246,15 +188,13 @@ class PptxMergerApp(QWidget):
     # --- 파일 탐색기로 파일 추가하는 기능 ---
     def open_file_dialog(self):
         filter_string = (
-            "All Presentation Files (*.pptx *.ppt);;"
             "PPTX Files (*.pptx);;"                     
-            "PPT Files (*.ppt);;"
             "All Files (*)"                             
         )
         
         file_names, _ = QFileDialog.getOpenFileNames(
             self, 
-            '병합할 PPT 파일 선택', 
+            '병합할 PPTX 파일 선택', 
             '', 
             filter_string
         )
@@ -266,7 +206,8 @@ class PptxMergerApp(QWidget):
     def dragEnterEvent(self, event):
         if event.mimeData().hasUrls():
             urls = [url.path() for url in event.mimeData().urls()]
-            is_valid_file = all(url.lower().endswith(('.pptx', '.ppt')) for url in urls)
+            # 이제 .pptx만 허용합니다.
+            is_valid_file = all(url.lower().endswith('.pptx') for url in urls)
             if is_valid_file:
                  event.accept()
             else:
@@ -278,7 +219,7 @@ class PptxMergerApp(QWidget):
         file_paths = []
         for url in event.mimeData().urls():
             path = url.toLocalFile()
-            if path.lower().endswith(('.pptx', '.ppt')):
+            if path.lower().endswith('.pptx'):
                 file_paths.append(path)
         
         if file_paths:
@@ -287,7 +228,7 @@ class PptxMergerApp(QWidget):
         else:
             event.ignore()
 
-    # --- 파일 목록 관리 헬퍼 함수 ---
+    # --- 파일 목록 관리 헬퍼 함수 (나머지 부분은 동일) ---
     def add_files_to_list(self, file_names):
         for file in file_names:
             if not self.list_widget.findItems(file, Qt.MatchExactly):
@@ -358,13 +299,10 @@ class PptxMergerApp(QWidget):
     # --- 워커 스레드 시그널 처리 ---
     def on_progress_update(self, current, total):
         self.progress_dialog.setMaximum(total)
-        if current == 1 and total == 1:
-            self.progress_dialog.setLabelText("PPT 파일을 PPTX로 변환 중...")
-            self.progress_dialog.setMaximum(100)
-            self.progress_dialog.setValue(50)
-        else:
-            self.progress_dialog.setValue(current)
-            self.progress_dialog.setLabelText(f"슬라이드 복사 중: {current}/{total}")
+        # 이제 .ppt 변환 로직이 없으므로 단순화
+        self.progress_dialog.setValue(current)
+        self.progress_dialog.setLabelText(f"슬라이드 복사 중: {current}/{total}")
+
 
     def on_merge_finished(self, success, message):
         self.merge_button.setEnabled(True)
