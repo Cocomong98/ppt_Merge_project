@@ -61,9 +61,9 @@ class MergerWorker(QThread):
             # 파일을 열 때 발생하는 경고를 무시하고 안정성 향상
             presentation = powerpoint.Presentations.Open(
                 ppt_path, 
-                ReadOnly=True,
-                Untitled=False,      
-                WithAddins=False     
+                ReadOnly=True # 가장 필수적인 인수만 남김
+                # Untitled=False,      # 제거됨: 불필요한 인수 제거
+                # WithAddins=False     # 제거됨: 오류를 일으킨 인수 제거
             )
             
             presentation.SaveAs(temp_pptx_path, 24) # 24는 ppSaveAsPresentation (pptx)
