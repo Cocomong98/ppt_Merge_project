@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env
+venv
+
+# Operating System Files
+.DS_Store # macOS
+Thumbs.db # Windows
+
+# PyInstaller / Build Artifacts
+build/
+dist/
+*.spec
+
+# Temporary/Log Files
+*.log
+*.tmp
+*~
+
+# MS PowerPoint Temporary Files
+# PPT 변환 중 생성되는 임시 파일 (tilde로 시작)
+~*.pptx

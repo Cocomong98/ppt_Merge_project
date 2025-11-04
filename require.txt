@@ -1,0 +1,8 @@
+# GUI 프레임워크
+PyQt5
+# PPTX 파일 처리
+python-pptx
+# Windows COM 객체 접근 (PPT 변환에 필수, Windows에서만 설치됨)
+pywin32
+# EXE 파일 생성을 위한 도구
+pyinstaller
